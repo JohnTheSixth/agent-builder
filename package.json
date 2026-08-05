@@ -1,0 +1,11 @@
+{
+  "name": "claude-builder",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "claude-builder-link": "./bin/link.mjs"
+  },
+  "scripts": {
+    "link": "node bin/link.mjs"
+  }
+}
