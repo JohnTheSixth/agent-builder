@@ -368,8 +368,8 @@ def finish(chunk_pdfs, out, wd, a, n_pages):
     steps.append({"tool": "doc_optimize", "args": {
         "doc": 1, "path": os.path.abspath(out), "discard": ["bookmarks"],
         "mono": {"compression": "jbig2", "downsample": False},
-        "gray": {"downsample": True, "ppi": a.gray_ppi, "above_ppi": a.gray_ppi + 50, "compression": "jpeg", "quality": a.gray_quality},
-        "color": {"downsample": True, "ppi": a.gray_ppi, "above_ppi": a.gray_ppi + 50, "compression": "jpeg", "quality": a.gray_quality}}})
+        "gray": {"downsample": True, "ppi": a.gray_ppi, "above_ppi": round(a.gray_ppi * 1.1), "compression": "jpeg", "quality": a.gray_quality},
+        "color": {"downsample": True, "ppi": a.gray_ppi, "above_ppi": round(a.gray_ppi * 1.1), "compression": "jpeg", "quality": a.gray_quality}}})
     rep = run_steps(steps, wd, "finish")
     r = result(rep, len(steps) - 1)
     print(f"wrote {out}: {r['bytes_after']:,} bytes ({r['bytes_before']:,} before optimizing)")
@@ -403,7 +403,16 @@ def cmd_build(a):
         scale = 1.0
     if med_w * scale / 72 > 12:
         sys.exit(f"pages would be {med_w*scale/72:.1f} in wide — the source size looks wrong; pass --book-height-in")
+    if a.render_dpi:   # land the render on the source's own pixel grid (e.g. an IA text mask at 360 ppi)
+        a.ppi = round(a.render_dpi / scale, 3)
     rdpi = a.ppi * scale
+    trim_at = {}
+    for spec in a.trim_at or []:
+        pg, _, pt = spec.rpartition(":")
+        if not pg:
+            sys.exit(f"--trim-at {spec!r}: expected PAGES:POINTS, e.g. 772-775:3")
+        for p in parse_pages(pg, n):
+            trim_at[p] = float(pt)
     print(f"{len(keep)} pages | scale {scale:.4f} | render {rdpi:.1f} dpi -> {a.ppi} ppi | "
           f"output {'native size' if not target else f'{target[0]/72:g}x{target[1]/72:g} in'}")
     engine = ocr_engine(a.ocr)
@@ -412,6 +421,20 @@ def cmd_build(a):
     pngs = pmap(lambda p: render(a.input, p, rdpi, os.path.join(pdir, f"p{p:04d}.png")), keep, a.jobs)
     print(f"rendered {len(pngs)} pages", flush=True)
 
+    tilts = {}
+    if a.deskew:
+        if not MAGICK:
+            sys.exit("--deskew needs ImageMagick (brew install imagemagick | sudo apt install imagemagick | winget install ImageMagick.ImageMagick)")
+        tpath = os.path.join(wd, f"tilts_{a.ppi}_{rdpi:.2f}.json")
+        tilts = {int(k): v for k, v in json.load(open(tpath)).items()} if os.path.exists(tpath) else {}
+        todo = [p for p in keep if p not in tilts]
+        for p, t in pmap(lambda p: (p, measure_tilt(os.path.join(pdir, f"p{p:04d}.png"))), todo, a.jobs):
+            tilts[p] = t
+        json.dump(tilts, open(tpath, "w"))
+        moved = sorted((abs(t), p, t) for p, t in tilts.items() if t)
+        print(f"straightening {len(moved)} page(s); largest: " +
+              ", ".join(f"p{p} {t:+.2f}°" for _, p, t in moved[::-1][:8]), flush=True)
+
     chunks = []; cdir = os.path.join(wd, "chunks"); os.makedirs(cdir, exist_ok=True)
     for k in range(0, len(keep), a.chunk):
         part = keep[k:k + a.chunk]; files = [os.path.join(pdir, f"p{p:04d}.png") for p in part]
@@ -419,11 +442,20 @@ def cmd_build(a):
         if a.clean:
             steps.append({"tool": "page_enhance_scan", "args": {"doc": 1, "level": a.clean}})
         for i, (p, f) in enumerate(zip(part, files), 1):
-            w, h = png_size(f); pw, ph = w / a.ppi * 72, h / a.ppi * 72; t = trim_pt
+            w, h = png_size(f); pw, ph = w / a.ppi * 72, h / a.ppi * 72; t = trim_at.get(p, trim_pt)
             is_gray = p in gray
+            ang = tilts.get(p, 0.0)
+            if ang:
+                # trim enough that the rotated crop stays inside the scan
+                s_, c_ = abs(math.sin(math.radians(ang))), math.cos(math.radians(ang))
+                t = max(t, ph / 2 * s_ + pw / 2 * (1 - c_) + 1, pw / 2 * s_ + ph / 2 * (1 - c_) + 1)
+                quad = [rot(x, y, pw / 2, ph / 2, -ang) for x, y in ((t, t), (pw - t, t), (pw - t, ph - t), (t, ph - t))]
+                corners = [round(v, 2) for xy in quad for v in xy]
+            else:
+                corners = [t, t, pw - t, t, pw - t, ph - t, t, ph - t]
             steps.append({"tool": "page_enhance_camera", "args": {
                 "doc": 1, "page": i, "mode": "greyscale" if is_gray else "bw",
-                "level": a.gray_level if is_gray else a.level, "corners": [t, t, pw - t, t, pw - t, ph - t, t, ph - t]}})
+                "level": a.gray_level if is_gray else a.level, "corners": corners}})
             if target:
                 cw, ch = pw - 2 * t, ph - 2 * t
                 if cw > target[0] + 0.5 or ch > target[1] + 0.5:
@@ -628,6 +660,33 @@ def page_tilt(png, scale, lines):
         if c not in sc:
             sc[c] = row_variance(png, box, c)
     return max(sc, key=sc.get), "sharpest"
+
+
+def measure_tilt(png):
+    """Tilt to correct on one rendered page (ImageMagick convention), or 0.0 when it isn't clearly tilted.
+    Only pages with a real block of text are measured, and the correction must sharpen the text rows."""
+    W, H = png_size(png)
+    r = magick([png, "-colorspace", "gray", "-threshold", "50%", "-format", "%@", "info:"]).stdout.strip()
+    m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", r)
+    if not m:
+        return 0.0
+    bw, bh, bx, by = map(int, m.groups())
+    if bw < 0.5 * W or bh < 0.4 * H:
+        return 0.0
+    box = [bx, by, bx + bw, by + bh]
+    try:
+        ang = float(magick([png, "-crop", f"{bw}x{bh}+{bx}+{by}", "+repage", "-colorspace", "gray", "-resize", "50%",
+                            "-deskew", "40%", "-format", "%[deskew:angle]", "info:"]).stdout.strip())
+    except ValueError:
+        return 0.0
+    if abs(ang) < 0.15 or abs(ang) > 3:
+        return 0.0
+    s0 = row_variance(png, box, 0.0)
+    sc = {round(ang + d, 2): 0.0 for d in (-0.1, 0.0, 0.1)}
+    for k in sc:
+        sc[k] = row_variance(png, box, k)
+    best = max(sc, key=sc.get)
+    return best if sc[best] > 1.03 * s0 and abs(best) >= 0.15 else 0.0
 
 
 def cmd_spreads(a):
@@ -865,7 +924,7 @@ def main():
     def common(p):
         p.add_argument("input"); p.add_argument("output")
         p.add_argument("--workdir", required=True, help="scratch folder; rerun with the same folder to resume")
-        p.add_argument("--ppi", type=int, default=400, help="output resolution of the 1-bit pages (default 400)")
+        p.add_argument("--ppi", type=float, default=400, help="output resolution of the 1-bit pages (default 400; fractional values allowed, e.g. to land the render on the source grid)")
         p.add_argument("--page-size", default="6x9", help="output page in inches, e.g. 6x9, or 'native' (build only)")
         p.add_argument("--level", type=int, default=65, help="black/white cutoff 0-100; higher = bolder text (default 65)")
         p.add_argument("--gray-level", type=int, default=60, help="cleanup level for grayscale pages (default 60)")
@@ -882,6 +941,11 @@ def main():
     p.add_argument("--book-height-in", type=float, help="real page height in inches when the PDF's page size is wrong")
     p.add_argument("--trim", type=float, default=7, help="points trimmed off every edge (scanner-bed slivers), default 7")
     p.add_argument("--clean", type=int, default=60, help="page_enhance_scan background removal 0-100 (0 = skip), default 60")
+    p.add_argument("--deskew", action="store_true", help="straighten tilted text pages (measured with ImageMagick, rotated by PdfCraft)")
+    p.add_argument("--render-dpi", type=float, help="render the source at exactly this dpi and derive --ppi from the scale; "
+                   "set it to the scan's text-mask ppi (see inspect) so the mask comes through pixel for pixel")
+    p.add_argument("--trim-at", action="append", help="SOURCE_PAGES:POINTS per-page trim, e.g. 772-775:3 for tables "
+                   "close to the scan edge (repeatable; overrides --trim)")
     p.add_argument("--chunk", type=int, default=30)
     p = sub.add_parser("spreads", help="two book pages per PDF page"); common(p)
     p.add_argument("--skip", help="spreads (source pages) to drop, e.g. a duplicate re-scan")

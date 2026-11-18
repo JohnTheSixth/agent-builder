@@ -46,6 +46,14 @@ Use these unless the user says otherwise — and still confirm the ones marked *
 
 - **Readability beats file size.** Aim small (often < 10 MB is impossible losslessly), never by blurring text.
 - **1-bit text at 400 ppi, black/white cutoff 65** (`--ppi 400 --level 65`). 300 ppi / cutoff 50 looked thin.
+  **Exception — scans that already store text as a 1-bit mask** (Internet Archive "MRC", `inspect`
+  shows a JBIG2 layer at a fixed ppi, often 360): render on that grid with `--render-dpi <mask ppi>`
+  so the mask comes through pixel for pixel. Resampling it to another ppi blurs and thickens fine
+  strokes (diacritics, Hebrew/Arabic/Syriac letters), and going above the mask ppi adds bytes, not detail.
+- **Tables, script charts and other fine detail the user cares about** (e.g. Semitic-language
+  tables) may go grayscale too (`--gray`), but each grayscale page costs ~300–350 KB at 300 ppi
+  versus ~30–40 KB in 1-bit — never gray whole prose sections, and *ask* when the total would
+  exceed the source's size.
 - **Uniform 6 × 9 in pages** (`--page-size 6x9`), content at its real size, centered.
 - **Remove** exterior covers, endpapers (patterned and their blank backs), scanner color charts / blank scanner sheets, and exact duplicate scans. **Keep** blank leaves inside the book (they keep the numbering right). *ask* when unsure.
 - **Photos / halftone plates stay grayscale** (`--gray`); line art and stamps go 1-bit.
@@ -103,6 +111,14 @@ python3 <skill-dir>/scripts/pdffix.py build IN.pdf OUT/name_clean.pdf --workdir 
 - If the PDF's page size is wrong (IA 72 ppi), pass `--book-height-in 8` (the real page height).
 - `--scale auto` fits the largest page into `--page-size`; `--trim 7` (points) removes dark
   scanner-bed slivers at the edges; `--clean 60` evens out yellowed/uneven paper first.
+- `--trim-at 772-775:3` overrides the trim for some source pages — use it when a table or
+  figure sits closer to the scan edge than `--trim` (a 7 pt trim clipped a table border 6 pt
+  from the edge). Look for it with `verify`'s edge check and by eye on table pages.
+- `--deskew` straightens tilted text pages (ImageMagick measures, PdfCraft rotates; a tilt is
+  only applied when it makes the text rows sharper). Use it for flatbed or IA scans with
+  visibly tilted pages.
+- `--render-dpi N` renders at exactly N dpi and derives `--ppi` from the scale (see the
+  1-bit-mask exception above). `--gray-ppi`/`--gray-quality` set grayscale pages (default 200 / 70).
 - Defaults already match the preferences: `--ppi 400 --level 65 --page-size 6x9`.
 
 ### 3b. Two-page spreads → `spreads`
@@ -152,7 +168,10 @@ size, resolution, tilt, OCR words, numbering), what was removed and why, anythin
 - PdfCraft compresses 1-bit images **losslessly only** (JBIG2/CCITT), and `doc_optimize` will
   not usefully downsample 1-bit pages. Size per page tracks text density and resolution.
 - Thin or broken letters → raise `--level` (65 → 75). Fuzzy edges → raise `--ppi` (300 → 400;
-  the source's own resolution is the ceiling for detail).
-- Only if the user explicitly accepts it: a lossy JBIG2 pass outside PdfCraft
-  (`ocrmypdf --jbig2-lossy`) can roughly halve the size, with a small risk of look-alike
-  character swaps (6↔8). Never do this silently.
+  the source's own resolution is the ceiling for detail). For a 1-bit-mask source use
+  `--render-dpi` at the mask ppi instead.
+- A well-made IA scan is often already compact (its JBIG2 mask is about what a lossless 1-bit
+  rebuild costs). Then the gain is legibility — white paper, straight pages, a uniform page
+  size, a better text layer — not size; tell the user so and don't promise a big reduction.
+- Lossy JBIG2 (symbol matching) is not available: PdfCraft is lossless-only and ocrmypdf 17
+  ignores `--jbig2-lossy`. Don't offer it.
