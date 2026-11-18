@@ -24,7 +24,9 @@ Input PDF path; output folder or file; and any of: pages/spreads to drop, page s
 6x9), resolution (default 400 ppi, cutoff 65), grayscale pages, label scheme, title/author,
 spread overrides (`--gutter-only`, `--gutter-at`, `--extra-bottom`), per-page trims (`--trim-at`),
 `--deskew`. Anything not given → use
-the defaults and say so in the report.
+the defaults and say so in the report. Don't add `--deskew` on your own for single pages: a
+slight, uniform tilt with no overscan showing is left as it is; only report tilt that varies a
+lot between pages so the parent can decide.
 
 # Defaults (the user's standing preferences)
 

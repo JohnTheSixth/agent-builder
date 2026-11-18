@@ -85,7 +85,10 @@ grayscale JPEG pages cost 10–20× a 1-bit page (a whole book in grayscale ≈ 
   prose at 300 ppi, quality 80 (quality 70 ≈ −15%, 250 ppi ≈ −30%). Gray only the pages that need it.
 - `doc_optimize` downsamples gray/color only above `above_ppi` (the script sets 1.1 × `--gray-ppi`).
 - **Tilt**: `--deskew` measures with ImageMagick `-deskew` on the text block, refines by row-profile
-  sharpness, and applies only corrections between 0.15° and 3° that sharpen the rows.
+  sharpness, and applies only corrections between 0.15° and 3° that sharpen the rows. It is
+  optional: a slight, uniform tilt with no overscan lines reads fine and costs nothing to keep;
+  straightening matters when tilt varies a lot between pages (two-page scans) or brings overscan
+  into view.
 - `doc_optimize` reports `images_refused`/no change when asked to downsample 1-bit images — it
   only replaces an image when the result is smaller, which resampled bilevel images rarely are.
 - The scanner bed can be black on some spreads and light gray on others — never detect the book

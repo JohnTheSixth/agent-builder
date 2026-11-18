@@ -86,7 +86,9 @@ report to the user, as a short table:
 - printed-number offset (`printed_minus_pdf_page`), missing front pages, blank pages;
 - covers, endpapers, scanner targets, duplicates (same headers on consecutive pages — compare
   thumbnails, or OCR the headers), photos/halftones, pen marks, sideways charts, maps;
-- **two-page spreads** (`looks_like_spreads`), tilt, gutter shadows;
+- **two-page spreads** (`looks_like_spreads`), gutter shadows;
+- tilt: whether it is slight and uniform (leave it) or varies a lot between pages / shows
+  overscan lines (straighten — always the case for spreads, `--deskew` for single pages);
 - implausible physical size (`suspicious_physical_size`, e.g. IA scans declaring 72 ppi → 34 × 54 in pages).
 
 ### 2. Ask before working
@@ -115,8 +117,10 @@ python3 <skill-dir>/scripts/pdffix.py build IN.pdf OUT/name_clean.pdf --workdir 
   figure sits closer to the scan edge than `--trim` (a 7 pt trim clipped a table border 6 pt
   from the edge). Look for it with `verify`'s edge check and by eye on table pages.
 - `--deskew` straightens tilted text pages (ImageMagick measures, PdfCraft rotates; a tilt is
-  only applied when it makes the text rows sharper). Use it for flatbed or IA scans with
-  visibly tilted pages.
+  only applied when it makes the text rows sharper). **Optional, off by default.** A slight,
+  fairly uniform tilt with no overscan lines (scanner-bed edges, the neighbouring page) showing
+  can be left as it is. Use it only when tilt varies a lot from page to page, or the tilt
+  brings overscan into the frame; *ask* when unsure.
 - `--render-dpi N` renders at exactly N dpi and derives `--ppi` from the scale (see the
   1-bit-mask exception above). `--gray-ppi`/`--gray-quality` set grayscale pages (default 200 / 70).
 - Defaults already match the preferences: `--ppi 400 --level 65 --page-size 6x9`.
@@ -157,7 +161,8 @@ python3 <skill-dir>/scripts/pdffix.py thumbs OUT/name_clean.pdf WORK/out --dpi 1
 
 Check: one page size throughout; labels match printed numbers on most pages (misses are OCR
 noise — spot-check them visually); `blank_pages` are exactly the expected blank leaves;
-`tilt_over_0.3deg` near empty; `ink_at_page_edge` pages inspected (clipped content → fix with
+`tilt_over_0.3deg` near empty for spreads (for single pages built without `--deskew` it is
+information only, unless the tilt varies a lot from page to page); `ink_at_page_edge` pages inspected (clipped content → fix with
 `--extra-bottom`/`--gutter-at`/wider margins and rerun). Zoom into a dense paragraph at ~200 dpi
 next to the original to confirm readability. Then report: before/after table (size, pages, page
 size, resolution, tilt, OCR words, numbering), what was removed and why, anything not fixable
