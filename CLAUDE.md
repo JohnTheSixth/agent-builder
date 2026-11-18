@@ -40,6 +40,16 @@ They are separate prompts, not generated from a shared source — when changing 
 - Tools are described by capability (web search, page fetch, native X search, subagents, file write), each with a fallback, never by a harness's tool name. Its "Capabilities" table is where that mapping lives.
 - Instructions are split across `SKILL.md` (workflow + hard rules), `sources.md` (search technique, evidence levels, catalog), and `template.md` (note layout). Keep each rule defined in one file only.
 
+## obsidian-plugin-bootstrap
+
+`skills/obsidian-plugin-bootstrap/` clones `obsidianmd/obsidian-sample-plugin` at run time.
+`scripts/bootstrap.mjs` changes only the plugin's identity fields: package.json/lock name, version,
+author and license, plus manifest.json, versions.json, LICENSE, README and the sample class names.
+It deliberately pins no dependency versions or lint config. Don't add any, because they go stale.
+The unmodified template fails `npm run lint`: `eslint-plugin-obsidianmd` flags sample code. So the
+skill has Claude remove flagged sample code until lint passes. To check it still works after the
+template changes, bootstrap into a scratch folder and run `npm install && npm run build && npm run lint`.
+
 ## Skill frontmatter notes
 
 Verified against Claude Code docs: `argument-hint`, `when_to_use` (underscore), `allowed-tools`, `model`, `context: fork`, and `disable-model-invocation` are valid; `description` + `when_to_use` are truncated at 1,536 chars combined. Use `${CLAUDE_SKILL_DIR}` to give subagents absolute paths to supporting files. The subagent tool is `Agent` (formerly `Task`); the built-in `Explore` agent has no web tools, so web-research fan-outs use `general-purpose`.
