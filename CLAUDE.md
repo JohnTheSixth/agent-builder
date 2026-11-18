@@ -32,9 +32,13 @@ No dependencies to install; `bin/link.mjs` uses only Node built-ins (ESM).
 
 They are separate prompts, not generated from a shared source — when changing shared behavior (sources, match grades, report structure, hard rules), update both deliberately. They currently differ on the staleness threshold (skill: >2 years since update; agent: >18 months since release or >12 months since last commit).
 
-## BizWiz drafts
+## BizWiz (portable skill)
 
-`skills/bizwiz-claude/` and `skills/bizwiz-grok/` are competing drafts of the same business-research skill, written by different models. `bizwiz-grok` targets Grok's harness (its tool names and `when-to-use` key don't work in Claude Code). Both split instructions across `SKILL.md` (workflow), `sources.md` (catalog), and `template.md` (Obsidian note layout) — keep rules defined in one file only.
+`skills/bizwiz/` is a business-reputation research skill merged from two earlier drafts (`bizwiz-claude`, `bizwiz-grok`; see git history). Unlike the other skills here, it is written to run in **any** agent harness (Claude, ChatGPT/Codex, Grok, etc.), so:
+
+- Frontmatter uses only keys from the open Agent Skills spec: `name`, `description` (≤1,024 chars, trigger phrases folded in), `compatibility`, `metadata`. Don't add Claude-only keys (`when_to_use`, `argument-hint`, `allowed-tools`) or `$ARGUMENTS` / `${CLAUDE_SKILL_DIR}`.
+- Tools are described by capability (web search, page fetch, native X search, subagents, file write), each with a fallback, never by a harness's tool name. Its "Capabilities" table is where that mapping lives.
+- Instructions are split across `SKILL.md` (workflow + hard rules), `sources.md` (search technique, evidence levels, catalog), and `template.md` (note layout). Keep each rule defined in one file only.
 
 ## Skill frontmatter notes
 

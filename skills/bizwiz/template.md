@@ -1,23 +1,29 @@
 # BizWiz note template
 
+The note is Obsidian-flavored Markdown. It also reads fine in any Markdown
+viewer: callouts degrade to blockquotes and `%% … %%` markers show as plain
+text. Keep the markers regardless, because re-runs depend on them.
+
 **Formatting rules**
-- External URLs use `[text](url)`. `[[wikilinks]]` only for notes that already
-  exist in the vault — never invent them.
-- Cite inline; use footnotes (`[^n]`) only where a link would clutter a table
+- External URLs use `[text](url)`. Use `[[wikilinks]]` only for notes that
+  already exist in the vault, and never invent them. If you can't see the
+  vault, don't use wikilinks at all.
+- Cite inline. Use footnotes (`[^n]`) only where a link would clutter a table
   cell. Every review example carries a date in the sources.md date format.
-- Frontmatter tags have no `#`. Unknown frontmatter values are left empty.
+- Frontmatter tags have no `#`. Leave unknown frontmatter values empty.
 - Everything below the H1 goes between `%% bizwiz:start %%` and
   `%% bizwiz:end %%`.
-- Sections marked *(optional)* — and the Red flags callout — are omitted when
-  empty. All others always appear; write "None found" or "Not visible on
-  accessible pages" rather than dropping them.
-- Don't repeat content across sections; link instead (`[[#Your concerns]]`).
+- Omit sections marked *(optional)*, and the Red flags callout, when they are
+  empty. Every other section always appears. In those, write "None found" or
+  "Not visible on accessible pages" rather than dropping the section.
+- Don't repeat content across sections. Link instead (`[[#Your concerns]]`).
 - `<angle brackets>` are placeholders. Never carry placeholder text or example
   values into a note.
 - Verdict callout type: Contact → `success`; Contact with caution → `warning`;
   Avoid → `danger`; Insufficient data → `question`.
 - On **Avoid**, "Before you contact them" lists the conditions that would have
-  to change, or the protections to insist on if contacting anyway.
+  to change, or the protections to insist on if the user contacts the business
+  anyway.
 
 ---
 
@@ -35,6 +41,7 @@ location: <City, ST>
 entity-type: <independent | franchise | chain-location | lead-gen-broker | unknown>
 website: <url>
 phone: <number>
+x-handle: <@handle, or empty>
 researched: <YYYY-MM-DD>
 verdict: <contact | caution | avoid | insufficient-data>
 confidence: <high | medium | low>
@@ -96,7 +103,7 @@ concerns:
 
 ## How the business responds
 
-<Owner-reply patterns across platforms and social: speed, tone, whether problems get fixed, any hostile replies — linked. Or "No owner replies visible on accessible pages.">
+<Owner-reply patterns across platforms and social (including X): speed, tone, whether problems get fixed, any hostile replies — linked. Or "No owner replies visible on accessible pages.">
 
 > [!danger] Red flags
 > - **<Serious | Moderate>:** <flag> — [source](<url>)
@@ -106,7 +113,7 @@ concerns:
 
 ## Community, social & news *(optional)*
 
-- [<source>, <date>](<url>) — <one-line gist; note if the business replied>
+- [<source or @user>, <date>](<url>) — <one-line gist; note if the business replied>
 
 ## Alternatives locals mention *(optional)*
 
@@ -142,7 +149,7 @@ Status: `Found` · `Snippets only` · `Blocked` · `Not listed` · `No results` 
 | Reviews | PissedConsumer / Ripoff Report | | |
 | Reviews | Consumers' Checkbook | | |
 | Community | Reddit | | |
-| Community | X | | |
+| Community | X (native / web) | | |
 | Community | Nextdoor / Facebook groups | | |
 | Community | YouTube | | |
 | Community | Recommendation threads | | |
