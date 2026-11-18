@@ -514,21 +514,26 @@ def good_word(w):
     return bool(WORD_RE.match(t))
 
 
-def ocr_words_pages(pdf, pages, engine, wd, jobs, dpi=200):
-    """{page: [ {x0,y0,x1,y1} in points ]} via PdfCraft ocr_words, cached in wd."""
-    cache = os.path.join(wd, "words.json")
+def ocr_words_pages(pngs, pages, engine, wd, jobs, dpi=200):
+    """{page: [ {x0,y0,x1,y1} in points ]} via PdfCraft ocr_words, cached in wd.
+
+    Recognition runs on a scratch document made from the analysis renders (pngs[page], rendered
+    at `dpi` from the page's top-left), not on the source: ocr_words leaves out words the page's
+    existing text layer already holds, so a scan with an OCR layer would come back nearly empty."""
+    cache = os.path.join(wd, "words_img.json")
     have = json.load(open(cache)) if os.path.exists(cache) else {}
     todo = [p for p in pages if str(p) not in have]
     batches = [todo[i:i + 12] for i in range(0, len(todo), 12)]
 
     def go(b):
-        steps = [{"tool": "doc_open", "args": {"path": pdf}},
-                 {"tool": "ocr_words", "args": {"doc": 1, "pages": b, "engine": engine, "dpi": dpi, "force_ocr": True}}]
+        steps = [{"tool": "doc_create", "args": {"from": "images", "paths": [pngs[p] for p in b], "dpi": dpi}},
+                 {"tool": "ocr_words", "args": {"doc": 1, "pages": list(range(1, len(b) + 1)), "engine": engine,
+                                                "dpi": dpi, "force_ocr": True}}]
         rep = run_steps(steps, os.path.join(wd, "ocrw"), f"w{b[0]:04d}")
         out = {}
         for pg in result(rep, 1)["pages"]:
-            out[str(pg["page"])] = [{"x0": w["box"][0], "y0": w["box"][1], "x1": w["box"][0] + w["box"][2],
-                                     "y1": w["box"][1] + w["box"][3]} for w in pg["words"] if good_word(w)]
+            out[str(b[pg["page"] - 1])] = [{"x0": w["box"][0], "y0": w["box"][1], "x1": w["box"][0] + w["box"][2],
+                                            "y1": w["box"][1] + w["box"][3]} for w in pg["words"] if good_word(w)]
         return out
     for i, res in enumerate(pmap(go, batches, max(1, jobs // 2))):
         have.update(res)
@@ -708,7 +713,7 @@ def cmd_spreads(a):
     adpi = 200.0; sc = adpi / 72
     adir = os.path.join(wd, "a200"); os.makedirs(adir, exist_ok=True)
     pmap(lambda s: render(src, s, adpi, os.path.join(adir, f"s{s:04d}.png")), spreads, a.jobs)
-    words = ocr_words_pages(src, spreads, engine, wd, a.jobs)
+    words = ocr_words_pages({s: os.path.join(adir, f"s{s:04d}.png") for s in spreads}, spreads, engine, wd, a.jobs, adpi)
     print(f"word boxes for {len(words)} spreads", flush=True)
 
     # 2. per-spread geometry

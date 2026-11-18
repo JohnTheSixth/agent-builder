@@ -83,6 +83,9 @@ grayscale JPEG pages cost 10–20× a 1-bit page (a whole book in grayscale ≈ 
   Hebrew/Arabic/Syriac strokes. 1-bit at the mask ppi cost ~17% more than 300 ppi.
 - **Grayscale cost**: ~300 KB/page for plates, tables and script charts and ~340 KB/page for
   prose at 300 ppi, quality 80 (quality 70 ≈ −15%, 250 ppi ≈ −30%). Gray only the pages that need it.
+- `ocr_words` leaves out words the page's existing text layer already holds (`already_on_page`),
+  even with `force_ocr`. On scans that already have an OCR layer (e.g. Acrobat Paper Capture) it
+  returns almost nothing, so `spreads` runs it on a scratch document built from its analysis renders.
 - `doc_optimize` downsamples gray/color only above `above_ppi` (the script sets 1.1 × `--gray-ppi`).
 - **Tilt**: `--deskew` measures with ImageMagick `-deskew` on the text block, refines by row-profile
   sharpness, and applies only corrections between 0.15° and 3° that sharpen the rows. It is
