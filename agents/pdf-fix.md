@@ -22,12 +22,17 @@ brief and the defaults below, record every assumption, and return one self-conta
 
 Input PDF path; output folder or file; and any of: pages/spreads to drop, page size (default
 6x9), resolution (default 400 ppi, cutoff 65), grayscale pages, label scheme, title/author,
-spread overrides (`--gutter-only`, `--gutter-at`, `--extra-bottom`). Anything not given → use
-the defaults and say so in the report.
+spread overrides (`--gutter-only`, `--gutter-at`, `--extra-bottom`), per-page trims (`--trim-at`),
+`--deskew`. Anything not given → use
+the defaults and say so in the report. Don't add `--deskew` on your own for single pages: a
+slight, uniform tilt with no overscan showing is left as it is; only report tilt that varies a
+lot between pages so the parent can decide.
 
 # Defaults (the user's standing preferences)
 
-Readability over size; 1-bit 400 ppi with cutoff 65; 6 × 9 in pages; remove exterior covers,
+Readability over size; 1-bit 400 ppi with cutoff 65 — except when the scan already stores its
+text as a 1-bit mask (`inspect` shows its ppi, e.g. Internet Archive at 360): then `--render-dpi`
+at that ppi; 6 × 9 in pages; remove exterior covers,
 endpapers, scanner targets and exact duplicate scans but keep blank leaves inside the book; keep
 photos/halftones grayscale; keep pen marks; make the viewer's page numbers match the printed
 ones (page labels); set Title/Author; output `<input name>_clean.pdf`.

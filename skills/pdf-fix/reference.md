@@ -76,6 +76,22 @@ grayscale JPEG pages cost 10–20× a 1-bit page (a whole book in grayscale ≈ 
 - **Pen underlining** turns solid black in 1-bit and competes with the text; only grayscale softens
   it (very expensive). Keep it unless the user wants otherwise.
 - **Scanner-bed edges**: trim ~7 pt per edge (`--trim`) or the dark sliver becomes a black bar.
+  Tables can sit closer to the edge than that — trim those pages less with `--trim-at`.
+- **IA MRC scans** (mupdf producer): a low-ppi color JPX background, a color JPX foreground and a
+  JBIG2 mask that carries all the text detail (360 ppi on recent IA books). Rendering at exactly
+  the mask ppi (`--render-dpi 360`) reproduces it; rendering at 300 merged small dots and thickened
+  Hebrew/Arabic/Syriac strokes. 1-bit at the mask ppi cost ~17% more than 300 ppi.
+- **Grayscale cost**: ~300 KB/page for plates, tables and script charts and ~340 KB/page for
+  prose at 300 ppi, quality 80 (quality 70 ≈ −15%, 250 ppi ≈ −30%). Gray only the pages that need it.
+- `ocr_words` leaves out words the page's existing text layer already holds (`already_on_page`),
+  even with `force_ocr`. On scans that already have an OCR layer (e.g. Acrobat Paper Capture) it
+  returns almost nothing, so `spreads` runs it on a scratch document built from its analysis renders.
+- `doc_optimize` downsamples gray/color only above `above_ppi` (the script sets 1.1 × `--gray-ppi`).
+- **Tilt**: `--deskew` measures with ImageMagick `-deskew` on the text block, refines by row-profile
+  sharpness, and applies only corrections between 0.15° and 3° that sharpen the rows. It is
+  optional: a slight, uniform tilt with no overscan lines reads fine and costs nothing to keep;
+  straightening matters when tilt varies a lot between pages (two-page scans) or brings overscan
+  into view.
 - `doc_optimize` reports `images_refused`/no change when asked to downsample 1-bit images — it
   only replaces an image when the result is smaller, which resampled bilevel images rarely are.
 - The scanner bed can be black on some spreads and light gray on others — never detect the book
@@ -85,7 +101,8 @@ grayscale JPEG pages cost 10–20× a 1-bit page (a whole book in grayscale ≈ 
 
 The same steps work by hand with `pdfcraft-cli`:
 
-1. `pdfcraft-cli render IN.pdf --page N --dpi D --out pN.png` for each kept page (D = target ppi × scale).
+1. `pdfcraft-cli render IN.pdf --page N --dpi D --out pN.png` for each kept page (D = target ppi × scale;
+   for a 1-bit-mask source use D = the mask ppi and target ppi = D ÷ scale).
 2. Write a JSON script per chunk: `doc_create` (images, dpi = target ppi) → `page_enhance_scan`
    (level 60) → per page `page_enhance_camera` (bw, level 65, corners inset 7 pt) → `page_set_box`
    (media, centered rect on 432 × 648) → `ocr_recognize` (auto, rover) → `doc_save`.

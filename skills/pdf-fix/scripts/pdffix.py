@@ -368,8 +368,8 @@ def finish(chunk_pdfs, out, wd, a, n_pages):
     steps.append({"tool": "doc_optimize", "args": {
         "doc": 1, "path": os.path.abspath(out), "discard": ["bookmarks"],
         "mono": {"compression": "jbig2", "downsample": False},
-        "gray": {"downsample": True, "ppi": a.gray_ppi, "above_ppi": a.gray_ppi + 50, "compression": "jpeg", "quality": a.gray_quality},
-        "color": {"downsample": True, "ppi": a.gray_ppi, "above_ppi": a.gray_ppi + 50, "compression": "jpeg", "quality": a.gray_quality}}})
+        "gray": {"downsample": True, "ppi": a.gray_ppi, "above_ppi": round(a.gray_ppi * 1.1), "compression": "jpeg", "quality": a.gray_quality},
+        "color": {"downsample": True, "ppi": a.gray_ppi, "above_ppi": round(a.gray_ppi * 1.1), "compression": "jpeg", "quality": a.gray_quality}}})
     rep = run_steps(steps, wd, "finish")
     r = result(rep, len(steps) - 1)
     print(f"wrote {out}: {r['bytes_after']:,} bytes ({r['bytes_before']:,} before optimizing)")
@@ -403,7 +403,16 @@ def cmd_build(a):
         scale = 1.0
     if med_w * scale / 72 > 12:
         sys.exit(f"pages would be {med_w*scale/72:.1f} in wide — the source size looks wrong; pass --book-height-in")
+    if a.render_dpi:   # land the render on the source's own pixel grid (e.g. an IA text mask at 360 ppi)
+        a.ppi = round(a.render_dpi / scale, 3)
     rdpi = a.ppi * scale
+    trim_at = {}
+    for spec in a.trim_at or []:
+        pg, _, pt = spec.rpartition(":")
+        if not pg:
+            sys.exit(f"--trim-at {spec!r}: expected PAGES:POINTS, e.g. 772-775:3")
+        for p in parse_pages(pg, n):
+            trim_at[p] = float(pt)
     print(f"{len(keep)} pages | scale {scale:.4f} | render {rdpi:.1f} dpi -> {a.ppi} ppi | "
           f"output {'native size' if not target else f'{target[0]/72:g}x{target[1]/72:g} in'}")
     engine = ocr_engine(a.ocr)
@@ -412,6 +421,20 @@ def cmd_build(a):
     pngs = pmap(lambda p: render(a.input, p, rdpi, os.path.join(pdir, f"p{p:04d}.png")), keep, a.jobs)
     print(f"rendered {len(pngs)} pages", flush=True)
 
+    tilts = {}
+    if a.deskew:
+        if not MAGICK:
+            sys.exit("--deskew needs ImageMagick (brew install imagemagick | sudo apt install imagemagick | winget install ImageMagick.ImageMagick)")
+        tpath = os.path.join(wd, f"tilts_{a.ppi}_{rdpi:.2f}.json")
+        tilts = {int(k): v for k, v in json.load(open(tpath)).items()} if os.path.exists(tpath) else {}
+        todo = [p for p in keep if p not in tilts]
+        for p, t in pmap(lambda p: (p, measure_tilt(os.path.join(pdir, f"p{p:04d}.png"))), todo, a.jobs):
+            tilts[p] = t
+        json.dump(tilts, open(tpath, "w"))
+        moved = sorted((abs(t), p, t) for p, t in tilts.items() if t)
+        print(f"straightening {len(moved)} page(s); largest: " +
+              ", ".join(f"p{p} {t:+.2f}°" for _, p, t in moved[::-1][:8]), flush=True)
+
     chunks = []; cdir = os.path.join(wd, "chunks"); os.makedirs(cdir, exist_ok=True)
     for k in range(0, len(keep), a.chunk):
         part = keep[k:k + a.chunk]; files = [os.path.join(pdir, f"p{p:04d}.png") for p in part]
@@ -419,11 +442,20 @@ def cmd_build(a):
         if a.clean:
             steps.append({"tool": "page_enhance_scan", "args": {"doc": 1, "level": a.clean}})
         for i, (p, f) in enumerate(zip(part, files), 1):
-            w, h = png_size(f); pw, ph = w / a.ppi * 72, h / a.ppi * 72; t = trim_pt
+            w, h = png_size(f); pw, ph = w / a.ppi * 72, h / a.ppi * 72; t = trim_at.get(p, trim_pt)
             is_gray = p in gray
+            ang = tilts.get(p, 0.0)
+            if ang:
+                # trim enough that the rotated crop stays inside the scan
+                s_, c_ = abs(math.sin(math.radians(ang))), math.cos(math.radians(ang))
+                t = max(t, ph / 2 * s_ + pw / 2 * (1 - c_) + 1, pw / 2 * s_ + ph / 2 * (1 - c_) + 1)
+                quad = [rot(x, y, pw / 2, ph / 2, -ang) for x, y in ((t, t), (pw - t, t), (pw - t, ph - t), (t, ph - t))]
+                corners = [round(v, 2) for xy in quad for v in xy]
+            else:
+                corners = [t, t, pw - t, t, pw - t, ph - t, t, ph - t]
             steps.append({"tool": "page_enhance_camera", "args": {
                 "doc": 1, "page": i, "mode": "greyscale" if is_gray else "bw",
-                "level": a.gray_level if is_gray else a.level, "corners": [t, t, pw - t, t, pw - t, ph - t, t, ph - t]}})
+                "level": a.gray_level if is_gray else a.level, "corners": corners}})
             if target:
                 cw, ch = pw - 2 * t, ph - 2 * t
                 if cw > target[0] + 0.5 or ch > target[1] + 0.5:
@@ -482,21 +514,26 @@ def good_word(w):
     return bool(WORD_RE.match(t))
 
 
-def ocr_words_pages(pdf, pages, engine, wd, jobs, dpi=200):
-    """{page: [ {x0,y0,x1,y1} in points ]} via PdfCraft ocr_words, cached in wd."""
-    cache = os.path.join(wd, "words.json")
+def ocr_words_pages(pngs, pages, engine, wd, jobs, dpi=200):
+    """{page: [ {x0,y0,x1,y1} in points ]} via PdfCraft ocr_words, cached in wd.
+
+    Recognition runs on a scratch document made from the analysis renders (pngs[page], rendered
+    at `dpi` from the page's top-left), not on the source: ocr_words leaves out words the page's
+    existing text layer already holds, so a scan with an OCR layer would come back nearly empty."""
+    cache = os.path.join(wd, "words_img.json")
     have = json.load(open(cache)) if os.path.exists(cache) else {}
     todo = [p for p in pages if str(p) not in have]
     batches = [todo[i:i + 12] for i in range(0, len(todo), 12)]
 
     def go(b):
-        steps = [{"tool": "doc_open", "args": {"path": pdf}},
-                 {"tool": "ocr_words", "args": {"doc": 1, "pages": b, "engine": engine, "dpi": dpi, "force_ocr": True}}]
+        steps = [{"tool": "doc_create", "args": {"from": "images", "paths": [pngs[p] for p in b], "dpi": dpi}},
+                 {"tool": "ocr_words", "args": {"doc": 1, "pages": list(range(1, len(b) + 1)), "engine": engine,
+                                                "dpi": dpi, "force_ocr": True}}]
         rep = run_steps(steps, os.path.join(wd, "ocrw"), f"w{b[0]:04d}")
         out = {}
         for pg in result(rep, 1)["pages"]:
-            out[str(pg["page"])] = [{"x0": w["box"][0], "y0": w["box"][1], "x1": w["box"][0] + w["box"][2],
-                                     "y1": w["box"][1] + w["box"][3]} for w in pg["words"] if good_word(w)]
+            out[str(b[pg["page"] - 1])] = [{"x0": w["box"][0], "y0": w["box"][1], "x1": w["box"][0] + w["box"][2],
+                                            "y1": w["box"][1] + w["box"][3]} for w in pg["words"] if good_word(w)]
         return out
     for i, res in enumerate(pmap(go, batches, max(1, jobs // 2))):
         have.update(res)
@@ -525,7 +562,13 @@ def main_block(lines):
         return []
     ext = [(min(w["x0"] for w in l), max(w["x1"] for w in l), min(w["y0"] for w in l), max(w["y1"] for w in l), l) for l in lines]
     body = [e for e in ext if len(e[4]) >= 4] or ext
-    mx0 = st.median(e[0] for e in body); mx1 = st.median(e[1] for e in body)
+    # outer 10th/90th percentile, not the median: on a mostly-verse page the median edges are the
+    # verse's, and the full-width prose lines around it would be thrown away as noise
+    if len(body) >= 5:
+        q0 = st.quantiles([e[0] for e in body], n=10); q1 = st.quantiles([e[1] for e in body], n=10)
+        mx0, mx1 = q0[0], q1[-1]
+    else:
+        mx0 = st.median(e[0] for e in body); mx1 = st.median(e[1] for e in body)
     tol = 0.6 * 72
     keep = sorted((e for e in ext if e[0] >= mx0 - tol and e[1] <= mx1 + tol), key=lambda e: e[2])
     groups, cur = [], []
@@ -630,6 +673,33 @@ def page_tilt(png, scale, lines):
     return max(sc, key=sc.get), "sharpest"
 
 
+def measure_tilt(png):
+    """Tilt to correct on one rendered page (ImageMagick convention), or 0.0 when it isn't clearly tilted.
+    Only pages with a real block of text are measured, and the correction must sharpen the text rows."""
+    W, H = png_size(png)
+    r = magick([png, "-colorspace", "gray", "-threshold", "50%", "-format", "%@", "info:"]).stdout.strip()
+    m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", r)
+    if not m:
+        return 0.0
+    bw, bh, bx, by = map(int, m.groups())
+    if bw < 0.5 * W or bh < 0.4 * H:
+        return 0.0
+    box = [bx, by, bx + bw, by + bh]
+    try:
+        ang = float(magick([png, "-crop", f"{bw}x{bh}+{bx}+{by}", "+repage", "-colorspace", "gray", "-resize", "50%",
+                            "-deskew", "40%", "-format", "%[deskew:angle]", "info:"]).stdout.strip())
+    except ValueError:
+        return 0.0
+    if abs(ang) < 0.15 or abs(ang) > 3:
+        return 0.0
+    s0 = row_variance(png, box, 0.0)
+    sc = {round(ang + d, 2): 0.0 for d in (-0.1, 0.0, 0.1)}
+    for k in sc:
+        sc[k] = row_variance(png, box, k)
+    best = max(sc, key=sc.get)
+    return best if sc[best] > 1.03 * s0 and abs(best) >= 0.15 else 0.0
+
+
 def cmd_spreads(a):
     wd = os.path.abspath(a.workdir); os.makedirs(wd, exist_ok=True)
     info = doc_info(a.input, wd); n = len(info["pages"])
@@ -649,7 +719,7 @@ def cmd_spreads(a):
     adpi = 200.0; sc = adpi / 72
     adir = os.path.join(wd, "a200"); os.makedirs(adir, exist_ok=True)
     pmap(lambda s: render(src, s, adpi, os.path.join(adir, f"s{s:04d}.png")), spreads, a.jobs)
-    words = ocr_words_pages(src, spreads, engine, wd, a.jobs)
+    words = ocr_words_pages({s: os.path.join(adir, f"s{s:04d}.png") for s in spreads}, spreads, engine, wd, a.jobs, adpi)
     print(f"word boxes for {len(words)} spreads", flush=True)
 
     # 2. per-spread geometry
@@ -679,7 +749,8 @@ def cmd_spreads(a):
     gut.update(forced)
 
     def analyse(s):
-        if str(s) in geom and geom[str(s)].get("gutter") == gut[s]:
+        if (str(s) in geom and geom[str(s)].get("gutter") == gut[s]
+                and all("head_outer" in p or not p.get("desk") for p in geom[str(s)]["pages"])):
             return s, geom[str(s)]
         ws = text_words(s)
         g = gut[s]
@@ -695,7 +766,19 @@ def cmd_spreads(a):
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
             pts = [rot(px, py, cx, cy, ang) for l in ls for w in l for px, py in
                    ((w["x0"], w["y0"]), (w["x1"], w["y0"]), (w["x0"], w["y1"]), (w["x1"], w["y1"]))]
+            # text column = median line start/end (straightened): ignores marginal numbers/notes,
+            # paragraph indents and short last lines that widen or narrow the ink's bounding box
+            starts, ends = [], []
+            for l in ([l for l in ls if len(l) >= 4] or ls):
+                xs = [rot(px, (w["y0"] + w["y1"]) / 2, cx, cy, ang)[0] for w in l for px in (w["x0"], w["x1"])]
+                starts.append(min(xs)); ends.append(max(xs))
+            # outer end of the top line (the running head's page number sits at the column's outer edge)
+            top = min(pt[1] for pt in pts)
+            head = [(rot(w["x0"], (w["y0"] + w["y1"]) / 2, cx, cy, ang)[0], rot(w["x1"], (w["y0"] + w["y1"]) / 2, cx, cy, ang)[0])
+                    for l in ls for w in l if rot(w["x0"], w["y0"], cx, cy, ang)[1] <= top + 0.12 * 72]
+            head_outer = (min(h[0] for h in head) if side == "L" else max(h[1] for h in head)) if len(head) >= 2 else None
             pages.append({"side": side, "angle": ang, "how": how, "center": [cx, cy], "n_lines": len(ls),
+                          "col": [st.median(starts), st.median(ends)], "head_outer": head_outer,
                           "desk": [min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts)]})
         return s, {"gutter": g, "pages": pages}
     for s, gg in pmap(analyse, spreads, a.jobs):
@@ -707,9 +790,12 @@ def cmd_spreads(a):
     json.dump(plan, open(os.path.join(wd, "plan.json"), "w"), indent=1)
     kinds = Counter(p["kind"] for p in plan)
     print(f"plan: {len(plan)} pages {dict(kinds)}", flush=True)
-    review = [f"{p['pdf_page']}(spread {p['spread']}{p['side']}, {p['kind']})" for p in plan if p["kind"] != "text"]
+    review = [f"{p['pdf_page']}(spread {p['spread']}{p['side']}, {p['kind']})" for p in plan
+              if p["kind"] not in ("text", "from-head")]
     if review:
-        print("review these output pages (placed without their own text block):", ", ".join(review), flush=True)
+        more = f" … and {len(review) - 80} more (see plan.json)" if len(review) > 80 else ""
+        print("review these output pages (placed from the facing page or gutter, or blank):",
+              ", ".join(review[:80]) + more, flush=True)
     if a.plan_only:
         print("plan written; stopping (--plan-only)"); return
 
@@ -736,7 +822,9 @@ def cmd_spreads(a):
 
 def make_plan(geom, spreads, a, target):
     IN = 72.0
-    def width(p): return (p["desk"][2] - p["desk"][0]) / IN if p.get("desk") else 0
+    def colx(p): return p.get("col") or [p["desk"][0], p["desk"][2]]
+    def width(p): return (colx(p)[1] - colx(p)[0]) / IN if p.get("desk") else 0
+    def ccx(p): return (colx(p)[0] + colx(p)[1]) / 2     # text-column centre (straightened x)
     def height(p): return (p["desk"][3] - p["desk"][1]) / IN if p.get("desk") else 0
     allw = [width(p) for s in spreads for p in geom[str(s)]["pages"] if p.get("desk") and height(p) > 3]
     TW = st.median(allw) if allw else 4.4                       # typical text width
@@ -747,8 +835,15 @@ def make_plan(geom, spreads, a, target):
     for s in spreads:
         L, R = geom[str(s)]["pages"]
         if normal(L) and normal(R):
-            dists.append((R["center"][0] - L["center"][0]) / IN)
+            dists.append((ccx(R) - ccx(L)) / IN)
     DIST = st.median(dists) if dists else 5.5
+    goff = {"L": [], "R": []}   # column centre's distance from the gutter, per side
+    for s in spreads:
+        if geom[str(s)].get("gutter") is not None:
+            for p in geom[str(s)]["pages"]:
+                if normal(p):
+                    goff[p["side"]].append(abs(ccx(p) - geom[str(s)]["gutter"]) / IN)
+    GOFF = {k: (st.median(v) if v else DIST / 2) for k, v in goff.items()}
     below = [height(p) for s in spreads for p in geom[str(s)]["pages"] if full(p)] or [7.0]
     ABOVE = a.head_margin
     WIN_H = ABOVE + max(below) + 0.25
@@ -776,14 +871,26 @@ def make_plan(geom, spreads, a, target):
             ang = p.get("angle", 0.0) if p.get("desk") else 0.0
             if s in gutter_only:
                 cx, cy, kind = gut + sign * DIST / 2 * IN, (q["center"][1] if q.get("desk") else 4.5 * IN), "gutter"
+                wcx = cx
             elif normal(p):
-                cx, cy = p["center"]; kind = "text"
-            elif normal(q):
-                cx, cy = q["center"][0] + sign * DIST * IN, q["center"][1]; kind = "from-facing"
-            elif p.get("desk") and width(p) >= 1.0 and abs(p["center"][0] - (gut + sign * DIST / 2 * IN)) <= 1.0 * IN:
-                cx, cy = p["center"]; kind = "own-partial"      # title pages etc.; noise elsewhere on the scan is ignored
+                cx, cy = p["center"]; kind = "text"; wcx = ccx(p)
             else:
-                cx, cy = gut + sign * DIST / 2 * IN, 4.5 * IN; kind = "blank" if not p.get("desk") else "gutter"
+                # Not a full-width text page (verse, tables, chapter openings, title pages): place the
+                # column where it would be, not centred on this page's own (often flush-left) block.
+                if normal(q):
+                    ref, kind = ccx(q) + sign * DIST * IN, "from-facing"
+                else:
+                    ref, kind = gut + sign * GOFF[side] * IN, "from-gutter"
+                h = p.get("head_outer")
+                if h is not None and abs(h - sign * TW / 2 * IN - ref) <= 0.35 * IN:
+                    ref, kind = h - sign * TW / 2 * IN, "from-head"    # running head marks the outer column edge
+                wcx = ref
+                if p.get("desk") and width(p) >= 0.3 and abs(ccx(p) - ref) <= (TW / 2 + 0.6) * IN:
+                    cx, cy = p["center"]           # straighten about its own block
+                else:                              # empty, or only noise far from the column
+                    cx, cy = ref, (q["center"][1] if q.get("desk") else 4.5 * IN)
+                    kind = "blank" if not p.get("desk") else "blank (noise ignored)"
+                    ang = 0.0
             if full(p):
                 yref = p["desk"][1]
             elif full(q):
@@ -796,7 +903,10 @@ def make_plan(geom, spreads, a, target):
             hw = HW if s not in gutter_only else min(target[0] / IN / 2 - 0.1, HW + 0.35)
             if normal(p):
                 hw = max(hw, min(target[0] / IN / 2 - 0.1, width(p) / 2 + 0.12))
-            wx0, wx1 = cx - hw * IN, cx + hw * IN
+            if p.get("desk") and not kind.startswith("blank"):   # keep marginal numbers/notes outside the column
+                need = max(wcx - p["desk"][0], p["desk"][2] - wcx) / IN + 0.08
+                hw = max(hw, min(target[0] / IN / 2 - 0.1, need))
+            wx0, wx1 = wcx - hw * IN, wcx + hw * IN
             wy0 = yref - ABOVE * IN
             wy1 = wy0 + (WIN_H + extra.get((s, side), 0)) * IN
             quad = [rot(x, y, cx, cy, -ang) for x, y in ((wx0, wy0), (wx1, wy0), (wx1, wy1), (wx0, wy1))]
@@ -865,7 +975,7 @@ def main():
     def common(p):
         p.add_argument("input"); p.add_argument("output")
         p.add_argument("--workdir", required=True, help="scratch folder; rerun with the same folder to resume")
-        p.add_argument("--ppi", type=int, default=400, help="output resolution of the 1-bit pages (default 400)")
+        p.add_argument("--ppi", type=float, default=400, help="output resolution of the 1-bit pages (default 400; fractional values allowed, e.g. to land the render on the source grid)")
         p.add_argument("--page-size", default="6x9", help="output page in inches, e.g. 6x9, or 'native' (build only)")
         p.add_argument("--level", type=int, default=65, help="black/white cutoff 0-100; higher = bolder text (default 65)")
         p.add_argument("--gray-level", type=int, default=60, help="cleanup level for grayscale pages (default 60)")
@@ -882,6 +992,11 @@ def main():
     p.add_argument("--book-height-in", type=float, help="real page height in inches when the PDF's page size is wrong")
     p.add_argument("--trim", type=float, default=7, help="points trimmed off every edge (scanner-bed slivers), default 7")
     p.add_argument("--clean", type=int, default=60, help="page_enhance_scan background removal 0-100 (0 = skip), default 60")
+    p.add_argument("--deskew", action="store_true", help="straighten tilted text pages (measured with ImageMagick, rotated by PdfCraft)")
+    p.add_argument("--render-dpi", type=float, help="render the source at exactly this dpi and derive --ppi from the scale; "
+                   "set it to the scan's text-mask ppi (see inspect) so the mask comes through pixel for pixel")
+    p.add_argument("--trim-at", action="append", help="SOURCE_PAGES:POINTS per-page trim, e.g. 772-775:3 for tables "
+                   "close to the scan edge (repeatable; overrides --trim)")
     p.add_argument("--chunk", type=int, default=30)
     p = sub.add_parser("spreads", help="two book pages per PDF page"); common(p)
     p.add_argument("--skip", help="spreads (source pages) to drop, e.g. a duplicate re-scan")

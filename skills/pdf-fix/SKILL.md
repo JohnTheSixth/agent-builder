@@ -46,6 +46,14 @@ Use these unless the user says otherwise — and still confirm the ones marked *
 
 - **Readability beats file size.** Aim small (often < 10 MB is impossible losslessly), never by blurring text.
 - **1-bit text at 400 ppi, black/white cutoff 65** (`--ppi 400 --level 65`). 300 ppi / cutoff 50 looked thin.
+  **Exception — scans that already store text as a 1-bit mask** (Internet Archive "MRC", `inspect`
+  shows a JBIG2 layer at a fixed ppi, often 360): render on that grid with `--render-dpi <mask ppi>`
+  so the mask comes through pixel for pixel. Resampling it to another ppi blurs and thickens fine
+  strokes (diacritics, Hebrew/Arabic/Syriac letters), and going above the mask ppi adds bytes, not detail.
+- **Tables, script charts and other fine detail the user cares about** (e.g. Semitic-language
+  tables) may go grayscale too (`--gray`), but each grayscale page costs ~300–350 KB at 300 ppi
+  versus ~30–40 KB in 1-bit — never gray whole prose sections, and *ask* when the total would
+  exceed the source's size.
 - **Uniform 6 × 9 in pages** (`--page-size 6x9`), content at its real size, centered.
 - **Remove** exterior covers, endpapers (patterned and their blank backs), scanner color charts / blank scanner sheets, and exact duplicate scans. **Keep** blank leaves inside the book (they keep the numbering right). *ask* when unsure.
 - **Photos / halftone plates stay grayscale** (`--gray`); line art and stamps go 1-bit.
@@ -78,7 +86,9 @@ report to the user, as a short table:
 - printed-number offset (`printed_minus_pdf_page`), missing front pages, blank pages;
 - covers, endpapers, scanner targets, duplicates (same headers on consecutive pages — compare
   thumbnails, or OCR the headers), photos/halftones, pen marks, sideways charts, maps;
-- **two-page spreads** (`looks_like_spreads`), tilt, gutter shadows;
+- **two-page spreads** (`looks_like_spreads`), gutter shadows;
+- tilt: whether it is slight and uniform (leave it) or varies a lot between pages / shows
+  overscan lines (straighten — always the case for spreads, `--deskew` for single pages);
 - implausible physical size (`suspicious_physical_size`, e.g. IA scans declaring 72 ppi → 34 × 54 in pages).
 
 ### 2. Ask before working
@@ -103,6 +113,16 @@ python3 <skill-dir>/scripts/pdffix.py build IN.pdf OUT/name_clean.pdf --workdir 
 - If the PDF's page size is wrong (IA 72 ppi), pass `--book-height-in 8` (the real page height).
 - `--scale auto` fits the largest page into `--page-size`; `--trim 7` (points) removes dark
   scanner-bed slivers at the edges; `--clean 60` evens out yellowed/uneven paper first.
+- `--trim-at 772-775:3` overrides the trim for some source pages — use it when a table or
+  figure sits closer to the scan edge than `--trim` (a 7 pt trim clipped a table border 6 pt
+  from the edge). Look for it with `verify`'s edge check and by eye on table pages.
+- `--deskew` straightens tilted text pages (ImageMagick measures, PdfCraft rotates; a tilt is
+  only applied when it makes the text rows sharper). **Optional, off by default.** A slight,
+  fairly uniform tilt with no overscan lines (scanner-bed edges, the neighbouring page) showing
+  can be left as it is. Use it only when tilt varies a lot from page to page, or the tilt
+  brings overscan into the frame; *ask* when unsure.
+- `--render-dpi N` renders at exactly N dpi and derives `--ppi` from the scale (see the
+  1-bit-mask exception above). `--gray-ppi`/`--gray-quality` set grayscale pages (default 200 / 70).
 - Defaults already match the preferences: `--ppi 400 --level 65 --page-size 6x9`.
 
 ### 3b. Two-page spreads → `spreads`
@@ -120,13 +140,17 @@ What it does, all with PdfCraft except measuring:
    pages, with outliers re-searched near neighbouring spreads), and each page's **text block**.
 3. Measures each page's **tilt** with ImageMagick `-deskew`, cross-checked against text-line
    slopes and settled by projection-profile sharpness (left pages often tilt 1–2°, right ones less).
-4. Plans a crop window per page: text block centered, running head at the same height on every
-   page, even margins on the 6 × 9 page. Pages without their own text block (blank, chapter
-   openings, title pages) are placed from the facing page.
+4. Plans a crop window per page: text column centered, running head at the same height on every
+   page, even margins on the 6 × 9 page. The column is measured from the median line start/end,
+   so marginal numbers, indents and short lines don't shift it, and the window widens to keep
+   marginal notes. Pages that aren't full-width prose (verse, tables, chapter openings, title
+   pages) are placed where the column would be — from their running head when it agrees, else
+   from the facing page, else from the gutter — so flush-left verse keeps its indent.
 5. PdfCraft `page_enhance_camera` warps each rotated window upright (split + straighten + crop in
    one step), converts to 1-bit; `page_set_box` centers it; OCR; combine; labels; JBIG2.
 
-It prints the output pages placed without their own text block — **look at each of them**.
+It prints the output pages placed from the facing page or gutter, or left blank — **look at
+them** (a contact sheet is enough for most; zoom into any that look off-centre or clipped).
 Maps, sideways charts and plates often need `--gutter-only SPREAD` plus `--gutter-at
 SPREAD:POINTS` (x of the gutter in full-scan points, read it off a thumbnail: pixels ÷ dpi × 72),
 or `--extra-bottom SPREAD:L|R:INCHES` when something (e.g. a sticker, a caption) sits below the
@@ -141,7 +165,8 @@ python3 <skill-dir>/scripts/pdffix.py thumbs OUT/name_clean.pdf WORK/out --dpi 1
 
 Check: one page size throughout; labels match printed numbers on most pages (misses are OCR
 noise — spot-check them visually); `blank_pages` are exactly the expected blank leaves;
-`tilt_over_0.3deg` near empty; `ink_at_page_edge` pages inspected (clipped content → fix with
+`tilt_over_0.3deg` near empty for spreads (for single pages built without `--deskew` it is
+information only, unless the tilt varies a lot from page to page); `ink_at_page_edge` pages inspected (clipped content → fix with
 `--extra-bottom`/`--gutter-at`/wider margins and rerun). Zoom into a dense paragraph at ~200 dpi
 next to the original to confirm readability. Then report: before/after table (size, pages, page
 size, resolution, tilt, OCR words, numbering), what was removed and why, anything not fixable
@@ -152,7 +177,10 @@ size, resolution, tilt, OCR words, numbering), what was removed and why, anythin
 - PdfCraft compresses 1-bit images **losslessly only** (JBIG2/CCITT), and `doc_optimize` will
   not usefully downsample 1-bit pages. Size per page tracks text density and resolution.
 - Thin or broken letters → raise `--level` (65 → 75). Fuzzy edges → raise `--ppi` (300 → 400;
-  the source's own resolution is the ceiling for detail).
-- Only if the user explicitly accepts it: a lossy JBIG2 pass outside PdfCraft
-  (`ocrmypdf --jbig2-lossy`) can roughly halve the size, with a small risk of look-alike
-  character swaps (6↔8). Never do this silently.
+  the source's own resolution is the ceiling for detail). For a 1-bit-mask source use
+  `--render-dpi` at the mask ppi instead.
+- A well-made IA scan is often already compact (its JBIG2 mask is about what a lossless 1-bit
+  rebuild costs). Then the gain is legibility — white paper, straight pages, a uniform page
+  size, a better text layer — not size; tell the user so and don't promise a big reduction.
+- Lossy JBIG2 (symbol matching) is not available: PdfCraft is lossless-only and ocrmypdf 17
+  ignores `--jbig2-lossy`. Don't offer it.
