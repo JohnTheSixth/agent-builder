@@ -140,13 +140,17 @@ What it does, all with PdfCraft except measuring:
    pages, with outliers re-searched near neighbouring spreads), and each page's **text block**.
 3. Measures each page's **tilt** with ImageMagick `-deskew`, cross-checked against text-line
    slopes and settled by projection-profile sharpness (left pages often tilt 1–2°, right ones less).
-4. Plans a crop window per page: text block centered, running head at the same height on every
-   page, even margins on the 6 × 9 page. Pages without their own text block (blank, chapter
-   openings, title pages) are placed from the facing page.
+4. Plans a crop window per page: text column centered, running head at the same height on every
+   page, even margins on the 6 × 9 page. The column is measured from the median line start/end,
+   so marginal numbers, indents and short lines don't shift it, and the window widens to keep
+   marginal notes. Pages that aren't full-width prose (verse, tables, chapter openings, title
+   pages) are placed where the column would be — from their running head when it agrees, else
+   from the facing page, else from the gutter — so flush-left verse keeps its indent.
 5. PdfCraft `page_enhance_camera` warps each rotated window upright (split + straighten + crop in
    one step), converts to 1-bit; `page_set_box` centers it; OCR; combine; labels; JBIG2.
 
-It prints the output pages placed without their own text block — **look at each of them**.
+It prints the output pages placed from the facing page or gutter, or left blank — **look at
+them** (a contact sheet is enough for most; zoom into any that look off-centre or clipped).
 Maps, sideways charts and plates often need `--gutter-only SPREAD` plus `--gutter-at
 SPREAD:POINTS` (x of the gutter in full-scan points, read it off a thumbnail: pixels ÷ dpi × 72),
 or `--extra-bottom SPREAD:L|R:INCHES` when something (e.g. a sticker, a caption) sits below the

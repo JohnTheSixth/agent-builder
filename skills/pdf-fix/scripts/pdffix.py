@@ -562,7 +562,13 @@ def main_block(lines):
         return []
     ext = [(min(w["x0"] for w in l), max(w["x1"] for w in l), min(w["y0"] for w in l), max(w["y1"] for w in l), l) for l in lines]
     body = [e for e in ext if len(e[4]) >= 4] or ext
-    mx0 = st.median(e[0] for e in body); mx1 = st.median(e[1] for e in body)
+    # outer 10th/90th percentile, not the median: on a mostly-verse page the median edges are the
+    # verse's, and the full-width prose lines around it would be thrown away as noise
+    if len(body) >= 5:
+        q0 = st.quantiles([e[0] for e in body], n=10); q1 = st.quantiles([e[1] for e in body], n=10)
+        mx0, mx1 = q0[0], q1[-1]
+    else:
+        mx0 = st.median(e[0] for e in body); mx1 = st.median(e[1] for e in body)
     tol = 0.6 * 72
     keep = sorted((e for e in ext if e[0] >= mx0 - tol and e[1] <= mx1 + tol), key=lambda e: e[2])
     groups, cur = [], []
@@ -743,7 +749,8 @@ def cmd_spreads(a):
     gut.update(forced)
 
     def analyse(s):
-        if str(s) in geom and geom[str(s)].get("gutter") == gut[s]:
+        if (str(s) in geom and geom[str(s)].get("gutter") == gut[s]
+                and all("head_outer" in p or not p.get("desk") for p in geom[str(s)]["pages"])):
             return s, geom[str(s)]
         ws = text_words(s)
         g = gut[s]
@@ -759,7 +766,19 @@ def cmd_spreads(a):
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
             pts = [rot(px, py, cx, cy, ang) for l in ls for w in l for px, py in
                    ((w["x0"], w["y0"]), (w["x1"], w["y0"]), (w["x0"], w["y1"]), (w["x1"], w["y1"]))]
+            # text column = median line start/end (straightened): ignores marginal numbers/notes,
+            # paragraph indents and short last lines that widen or narrow the ink's bounding box
+            starts, ends = [], []
+            for l in ([l for l in ls if len(l) >= 4] or ls):
+                xs = [rot(px, (w["y0"] + w["y1"]) / 2, cx, cy, ang)[0] for w in l for px in (w["x0"], w["x1"])]
+                starts.append(min(xs)); ends.append(max(xs))
+            # outer end of the top line (the running head's page number sits at the column's outer edge)
+            top = min(pt[1] for pt in pts)
+            head = [(rot(w["x0"], (w["y0"] + w["y1"]) / 2, cx, cy, ang)[0], rot(w["x1"], (w["y0"] + w["y1"]) / 2, cx, cy, ang)[0])
+                    for l in ls for w in l if rot(w["x0"], w["y0"], cx, cy, ang)[1] <= top + 0.12 * 72]
+            head_outer = (min(h[0] for h in head) if side == "L" else max(h[1] for h in head)) if len(head) >= 2 else None
             pages.append({"side": side, "angle": ang, "how": how, "center": [cx, cy], "n_lines": len(ls),
+                          "col": [st.median(starts), st.median(ends)], "head_outer": head_outer,
                           "desk": [min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts)]})
         return s, {"gutter": g, "pages": pages}
     for s, gg in pmap(analyse, spreads, a.jobs):
@@ -771,9 +790,12 @@ def cmd_spreads(a):
     json.dump(plan, open(os.path.join(wd, "plan.json"), "w"), indent=1)
     kinds = Counter(p["kind"] for p in plan)
     print(f"plan: {len(plan)} pages {dict(kinds)}", flush=True)
-    review = [f"{p['pdf_page']}(spread {p['spread']}{p['side']}, {p['kind']})" for p in plan if p["kind"] != "text"]
+    review = [f"{p['pdf_page']}(spread {p['spread']}{p['side']}, {p['kind']})" for p in plan
+              if p["kind"] not in ("text", "from-head")]
     if review:
-        print("review these output pages (placed without their own text block):", ", ".join(review), flush=True)
+        more = f" … and {len(review) - 80} more (see plan.json)" if len(review) > 80 else ""
+        print("review these output pages (placed from the facing page or gutter, or blank):",
+              ", ".join(review[:80]) + more, flush=True)
     if a.plan_only:
         print("plan written; stopping (--plan-only)"); return
 
@@ -800,7 +822,9 @@ def cmd_spreads(a):
 
 def make_plan(geom, spreads, a, target):
     IN = 72.0
-    def width(p): return (p["desk"][2] - p["desk"][0]) / IN if p.get("desk") else 0
+    def colx(p): return p.get("col") or [p["desk"][0], p["desk"][2]]
+    def width(p): return (colx(p)[1] - colx(p)[0]) / IN if p.get("desk") else 0
+    def ccx(p): return (colx(p)[0] + colx(p)[1]) / 2     # text-column centre (straightened x)
     def height(p): return (p["desk"][3] - p["desk"][1]) / IN if p.get("desk") else 0
     allw = [width(p) for s in spreads for p in geom[str(s)]["pages"] if p.get("desk") and height(p) > 3]
     TW = st.median(allw) if allw else 4.4                       # typical text width
@@ -811,8 +835,15 @@ def make_plan(geom, spreads, a, target):
     for s in spreads:
         L, R = geom[str(s)]["pages"]
         if normal(L) and normal(R):
-            dists.append((R["center"][0] - L["center"][0]) / IN)
+            dists.append((ccx(R) - ccx(L)) / IN)
     DIST = st.median(dists) if dists else 5.5
+    goff = {"L": [], "R": []}   # column centre's distance from the gutter, per side
+    for s in spreads:
+        if geom[str(s)].get("gutter") is not None:
+            for p in geom[str(s)]["pages"]:
+                if normal(p):
+                    goff[p["side"]].append(abs(ccx(p) - geom[str(s)]["gutter"]) / IN)
+    GOFF = {k: (st.median(v) if v else DIST / 2) for k, v in goff.items()}
     below = [height(p) for s in spreads for p in geom[str(s)]["pages"] if full(p)] or [7.0]
     ABOVE = a.head_margin
     WIN_H = ABOVE + max(below) + 0.25
@@ -840,14 +871,26 @@ def make_plan(geom, spreads, a, target):
             ang = p.get("angle", 0.0) if p.get("desk") else 0.0
             if s in gutter_only:
                 cx, cy, kind = gut + sign * DIST / 2 * IN, (q["center"][1] if q.get("desk") else 4.5 * IN), "gutter"
+                wcx = cx
             elif normal(p):
-                cx, cy = p["center"]; kind = "text"
-            elif normal(q):
-                cx, cy = q["center"][0] + sign * DIST * IN, q["center"][1]; kind = "from-facing"
-            elif p.get("desk") and width(p) >= 1.0 and abs(p["center"][0] - (gut + sign * DIST / 2 * IN)) <= 1.0 * IN:
-                cx, cy = p["center"]; kind = "own-partial"      # title pages etc.; noise elsewhere on the scan is ignored
+                cx, cy = p["center"]; kind = "text"; wcx = ccx(p)
             else:
-                cx, cy = gut + sign * DIST / 2 * IN, 4.5 * IN; kind = "blank" if not p.get("desk") else "gutter"
+                # Not a full-width text page (verse, tables, chapter openings, title pages): place the
+                # column where it would be, not centred on this page's own (often flush-left) block.
+                if normal(q):
+                    ref, kind = ccx(q) + sign * DIST * IN, "from-facing"
+                else:
+                    ref, kind = gut + sign * GOFF[side] * IN, "from-gutter"
+                h = p.get("head_outer")
+                if h is not None and abs(h - sign * TW / 2 * IN - ref) <= 0.35 * IN:
+                    ref, kind = h - sign * TW / 2 * IN, "from-head"    # running head marks the outer column edge
+                wcx = ref
+                if p.get("desk") and width(p) >= 0.3 and abs(ccx(p) - ref) <= (TW / 2 + 0.6) * IN:
+                    cx, cy = p["center"]           # straighten about its own block
+                else:                              # empty, or only noise far from the column
+                    cx, cy = ref, (q["center"][1] if q.get("desk") else 4.5 * IN)
+                    kind = "blank" if not p.get("desk") else "blank (noise ignored)"
+                    ang = 0.0
             if full(p):
                 yref = p["desk"][1]
             elif full(q):
@@ -860,7 +903,10 @@ def make_plan(geom, spreads, a, target):
             hw = HW if s not in gutter_only else min(target[0] / IN / 2 - 0.1, HW + 0.35)
             if normal(p):
                 hw = max(hw, min(target[0] / IN / 2 - 0.1, width(p) / 2 + 0.12))
-            wx0, wx1 = cx - hw * IN, cx + hw * IN
+            if p.get("desk") and not kind.startswith("blank"):   # keep marginal numbers/notes outside the column
+                need = max(wcx - p["desk"][0], p["desk"][2] - wcx) / IN + 0.08
+                hw = max(hw, min(target[0] / IN / 2 - 0.1, need))
+            wx0, wx1 = wcx - hw * IN, wcx + hw * IN
             wy0 = yref - ABOVE * IN
             wy1 = wy0 + (WIN_H + extra.get((s, side), 0)) * IN
             quad = [rot(x, y, cx, cy, -ang) for x, y in ((wx0, wy0), (wx1, wy0), (wx1, wy1), (wx0, wy1))]
